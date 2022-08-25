@@ -1,48 +1,49 @@
-# hw-acceleration-of-compression-and-crypto
-
 # CompNcrypt
-FPGA OpenCL offloading pipelines for C|Dec-ompression and En|De-cryption.
+FPGA OpenCL offloading pipelines for C|Dec-ompression and En|De-cryption 
 
-## Setup
-Project tested on Intel FPGA Programmable Acceleration Card D5005 within a local server and IL Academic Compute Environment (ACE).
+## Prerequisites
+Project tested on Intel FPGA Programmable Acceleration Card D5005 within a local server and IL Academic Compute Environment (ACE). 
+
+### Local server
+```bash
+ssh d5005.ethz.ch 
+lspci | grep "accelerator"
+# af:00.0 Processing accelerators: Intel Corporation Device 0b2b (rev 01)
+source /opt/inteldevstack/init_env.sh
+source /opt/intelFPGA_pro/quartus_19.2.0b57/hld/init_opencl.sh		
+cd compress-and-encrypt
+```
 
 ### IL Academic Compute Environment (ACE)
 ```bash
 source /export/fpga/bin/setup-fpga-env fpga-pac-s10
 qsub-fpga
-cd hw-acceleration-of-compression-and-crypto
+cd compress-and-encrypt
 ```
+	
+## Dependencies
 
-## Build
-
-#### Hardware
+## Build `HW`
 ```bash
 make fpga
 ```
-| Parameter    | Values              | Default | Description       |
-|--------------|---------------------|---------|-------------------|
-| GZIP_ENGINES | int 1 -- 4          | 1       | # of GZIP engines |
-| AES_ENGINES  | int 1 -- 8          | 1       | # of AES engines  |
-| AES_MODE     | `CBC`, `EBC`, `CTR` | `CBC`   | Encryption mode   |
 
-### Software
+## Build `SW (host)`
 ```
 make host
 ```
-| Parameter    | Values              | Default | Description       |
-|--------------|---------------------|---------|-------------------|
-| GZIP_ENGINES | int 1 -- 4          | 1       | # of GZIP engines |
-| AES_ENGINES  | int 1 -- 8          | 1       | # of AES engines  |
 
-
-## Execute
+## Test 
 ```
-./build.hw.CBC.1g.1a/host --input=<> --n_pages=<>
+./build.hw.1e.16v.1ldb/host file0.txt 1178
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file1.txt 14266048
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file2.txt 722240
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file3.txt 1932
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file4.txt 135040
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file5.txt 2176
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file6.txt 34816
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file7.txt 8704
+./build.hw.1e.16v.1ldb/host /tmp/monica/input_files/file8.txt 17408
 ```
-| Parameter    | Values              | Default      | Description               |
-|--------------|---------------------|--------------|---------------------------|
-| --input      | path to a file      | `input.txt`  | Payload file              |
-| --n_pages    | int > 0             | 1            | # of pages inside payload |
-| --profilling | path to a file      | `output.csv` | Profilling output file    |
-| --emulator   |                     | false        | Run as emulation          |
 
+## Simulation

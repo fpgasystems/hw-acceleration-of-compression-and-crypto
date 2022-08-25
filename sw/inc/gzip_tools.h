@@ -23,15 +23,63 @@
 #ifndef GZIP_H
 #define GZIP_H
 
-#include "compNcrypt.h"
+struct gzip_out_info_t {
+  // location of first uncompressed byte from the input stream
+  unsigned int fvp;
+  // lz compressed file size
+  unsigned int compsize_lz;
+  // final compressed file size
+  unsigned int compsize_huffman;
+};
+
+// The maximum number of nodes in the Huffman tree is 2^(8+1)-1 = 511 
+#define MAX_TREE_NODES 511
+#define MAX_HUFFCODE_BITS 16
+//#define DEBUGTREE
+
+typedef struct {
+  unsigned char *BytePtr;
+  unsigned int  BitPos;
+} huff_bitstream_t;
+
+typedef struct {
+  int Symbol;
+  unsigned int Count;
+  unsigned int Code;
+  unsigned int Bits;
+} huff_sym_t;
+
+
+typedef struct huff_encodenode_struct huff_encodenode_t;
+
+struct huff_encodenode_struct {
+  huff_encodenode_t *ChildA, *ChildB;
+  int Count;
+  int Symbol;
+  int Level;
+};
+
+typedef struct huff_decodenode_struct huff_decodenode_t;
+
+struct huff_decodenode_struct {
+  huff_decodenode_t *ChildA, *ChildB;
+  int Symbol;
+};
+
+// NOTE: ENGINES and VEC values for the host and kernel must match 
+// If either of the variables were otherwise defined in the kernel complation, 
+// they must also be defined the same for the host compilation 
+#ifndef VEC
+#define VEC 16
+#endif
+#ifndef ENGINES
+#define ENGINES 1
+#endif
+
 
 //---------------------------------------------------------------------------------------
 //  FUNCTION PROTOTYPES
 //---------------------------------------------------------------------------------------
-
-int decompress_on_host(unsigned char *input, huff_encodenode_t *tree, unsigned int insize,
-  unsigned int outsize, unsigned char marker, unsigned short *output_huffman,
-  struct gzip_out_info_t gzip_out_info, unsigned int remaining_bytes, double &time_decompress);
 
 unsigned char Compute_Huffman(unsigned char *input, unsigned int insize, unsigned int *huftable, huff_encodenode_t **root);
 int LZ_Uncompress(unsigned char *in, unsigned char *out, unsigned int insize);

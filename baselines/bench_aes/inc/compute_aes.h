@@ -1,6 +1,7 @@
 #ifndef COMPUTE_AES
 #define COMPUTE_AES
 
+#include <tuple>
 #include "aes.h"
 
 #define MAX_NUM_THREADS 14

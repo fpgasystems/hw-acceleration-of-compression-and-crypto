@@ -47,7 +47,7 @@ void _checkError(int line,
                  cl_int error,
                  const char *msg,
                  ...); // does not return
-#define checkError(status, ...) aocl_utils::_checkError(__LINE__, __FILE__, status, __VA_ARGS__)
+#define checkError(status, ...) _checkError(__LINE__, __FILE__, status, __VA_ARGS__)
 
 // Sets the current working directory to the same directory that contains
 // this executable. Returns true on success.
@@ -119,3 +119,4 @@ void oclContextCallback(const char *errinfo, const void *, size_t, void *);
 } // ns aocl_utils
 
 #endif
+

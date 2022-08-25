@@ -23,9 +23,9 @@
 #define GZIP_CHANNELS_H
 
 #pragma OPENCL EXTENSION cl_intel_channels : enable
-#include "../sw/inc/compNcrypt.h"
+#include "../sw/inc/gzip_tools.h"
 
-// GZIP_ENGINES and VEC are defined in gzip_tools.h
+// ENGINES and VEC are defined in gzip_tools.h
 // NOTE: ENGINES and VEC values for the host and kernel must match 
 // If either of the variables were otherwise defined in the kernel complation, 
 // they must also be defined the same for the host compilation 
@@ -38,61 +38,36 @@
 
 struct lz_input_t {
   unsigned char data[VEC];
-  unsigned char marker;
-  bool last;
 };
 
 struct huffman_input_t {
   unsigned char data[VECX2];
   bool dontencode[VECX2];
   bool valid[VECX2];
-  bool last;
 };
 
 struct huffman_output_t {
   unsigned short data[VECX2];
   bool write;
-  bool last;
 };
 
-struct gzip_header_t {
-  unsigned int first_valid_pos;
-  unsigned int compsize_lz;
-  unsigned int compsize_huffman;
-};
 
-struct gzip_to_aes_t {
-  unsigned short data[VECX2];
-  bool last;
-};
-
-struct aes_enc_setup_t {
-  int8 key;
-  global long8 *restrict out;
-  int8 config_data;
-  unsigned int offset;
-};
-
-channel struct lz_input_t ch_lz_in[GZIP_ENGINES]  __attribute__((depth(64)));
+channel struct lz_input_t ch_lz_in[ENGINES]  __attribute__((depth(64)));
 // The first value is read outside of the inner loop,
 // and we can't read from the same channel in two places. 
 // Use a seperate channel instead of  moving the first read into the loop and predicating.
-channel struct lz_input_t ch_lz_in_first_value[GZIP_ENGINES];
-channel struct huffman_input_t ch_huffman_input[GZIP_ENGINES] __attribute__((depth(64)));
-channel struct huffman_output_t ch_huffman_output[GZIP_ENGINES] __attribute__((depth(64)));
+channel struct lz_input_t ch_lz_in_first_value[ENGINES];
+channel struct huffman_input_t ch_huffman_input[ENGINES] __attribute__((depth(64)));
+channel struct huffman_output_t ch_huffman_output[ENGINES] __attribute__((depth(64)));
 // See comment on ch_lz_in_first_value
-channel struct huffman_output_t ch_huffman_output_last_value[GZIP_ENGINES] __attribute__((depth(2)));
-channel unsigned int ch_huffman_coeff[GZIP_ENGINES];
+channel struct huffman_output_t ch_huffman_output_last_value[ENGINES];
+channel unsigned int ch_huffman_coeff[ENGINES];
 
-// We write out a few integer values at the end of the compression
-channel unsigned int ch_lz_out_first_valid_pos[GZIP_ENGINES];
-channel unsigned int ch_lz_out_compsize_lz[GZIP_ENGINES];
-channel unsigned int ch_huffman_out_compsize_huffman[GZIP_ENGINES];
-channel struct gzip_header_t ch_gzip2header[GZIP_ENGINES] __attribute__((depth(2)));
-channel struct gzip_header_t ch_header2aes[AES_ENGINES] __attribute__((depth(2)));
+// We write out a few integer values at the end of the compression.  It's
+// simplest to just create a channel for each one.
+channel unsigned int ch_lz_out_first_valid_pos[ENGINES];
+channel unsigned int ch_lz_out_compsize_lz[ENGINES];
+channel unsigned int ch_huffman_out_compsize_huffman[ENGINES];
 
-channel struct gzip_to_aes_t ch_gzip2load[GZIP_ENGINES] __attribute__((depth(64)));
-channel struct gzip_to_aes_t ch_load2aes[AES_ENGINES] __attribute__((depth(4096/VECX2)));
-
-channel struct aes_enc_setup_t ch_aes_enc_setup[AES_ENGINES] __attribute__((depth(2)));
 #endif
+

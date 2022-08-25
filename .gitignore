@@ -2,13 +2,6 @@ _build*
 build*
 .emu_models*
 
-# test files
-files_*
-
-# results file
-*throughput*
-*thr*
-
 # vivado
 *.jou
 vivado.log

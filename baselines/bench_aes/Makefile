@@ -53,7 +53,7 @@ INCS := $(wildcard ./inc/*.h)
 SRCS := $(wildcard ./src/*.cpp)
 LIBS := rt pthread
 
-.PHONY: all clean clean_results sw_bench
+.PHONY: all clean sw_bench
 
 all: $(SRCS) $(INCS)
 	$(CXX) $(CXXFLAGS) $(foreach D,$(INC_DIRS),-I$D) $(SRCS) -o aes_test 
@@ -61,25 +61,12 @@ all: $(SRCS) $(INCS)
 clean:
 	rm aes_test
 
-clean_results:
-	rm aes_thr_*
-
 # Run benchmark
-sort_results:
-	for f in ./*.dat; do \
-	    v=name.dat; \
-		sort -n -k 2 "$$f" > "$$v"; \
-		mv "$$v" "$$f"; \
-	done;
-
 .PHONY: sw_bench
-sw_bench: all 
-	for f in /mnt/scratch/muellein/git/hana-io-tracing/results/2020-07-30-10-14-18/blocks/*; do \
-		p=`basename "$$f" | awk -F'[-.]' '{print $$2}'`; \
-		for m in 1 2 3 ; do \
-			for th in 1 2; do \
-				./aes_test "$$f" "$$p" "$$m" "$$th" 100; sync; \
-			done; \
-		done; \
-	done;
-	$(MAKE) sort_results
+sw_bench: all
+	for m in 1 2 3 ; do \
+		aug=2; while [[ $$aug -le 37000 ]]; do \
+			./aes_test ../../file0.txt "$$m" "$$aug" 100 2; sync; \
+      		((aug = aug*2)); \
+      		done; \
+     done;
