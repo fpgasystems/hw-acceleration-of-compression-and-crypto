@@ -23,30 +23,32 @@ endif
 ##############################################################################
 
 BOARD := pac_s10_dc
-MODE  := CBC
+
+KERNEL_CL = hw/compNcrypt.cl
+
+GZIP_ENGINES = 1
+GZIP_KERNELS = 5
+GZIP_VEC = 16
+GZIP_LBD = 1
+GZIP_SOURCES = hw/gzip.cl
+
+GZIP_FLAGS := -DVEC=$(GZIP_VEC)
+GZIP_FLAGS += -DENGINES=$(GZIP_ENGINES)
+GZIP_FLAGS += -DLOW_BANDWIDTH_DEVICE=$(GZIP_LBD)
 
 AES_SOURCES = hw/aes/*.sv hw/aes/*.vhd
-AES_KERNEL_CL = hw/aes.cl
-
-ifeq ($(MODE),CBC)
-AES_KERNEL_XML = hw/aes/aes_kernels.xml
-else ifeq ($(MODE),ECB)
-AES_KERNEL_XML = hw/aes/aes_kernels_ecb.xml
-else ifeq ($(MODE),CTR)
-AES_KERNEL_XML = hw/aes/aes_kernels_ctr.xml
-else
-$(error Invalid TARGET)
-endif
-
+#AES_KERNEL_CL = hw/gzip.cl
+AES_KERNEL_XML = hw/aes/aes_kernels_encryption.xml
 AES_KERNEL_AOC = $(TARGET_DIR)/aes.aoco
 AES_KERNEL_LIB = aes.aoclib
 
 TARGET := hw
-TARGET_HW := encrypt_decrypt.aocx
+TARGET_HW := compNcrypt.aocx
 TARGET_TAG := build
-TARGET_DIR := $(TARGET_TAG)
+TARGET_DIR := $(TARGET_TAG).$(TARGET).$(GZIP_ENGINES)e.$(GZIP_VEC)v.$(GZIP_LBD)ldb
 
-SWGZIP_FLAGS := -DBUILD_FOLDER=$(TARGET_DIR)
+SWGZIP_FLAGS := -DGZIP_KERNELS=$(GZIP_KERNELS)
+SWGZIP_FLAGS += -DBUILD_FOLDER=$(TARGET_DIR)
 
 #$(info GZIP_LBD is $(GZIP_LBD))
 
@@ -126,8 +128,8 @@ host : $(TARGET_DIR)/$(TARGET_SW)
 fpga : $(TARGET_DIR)/$(TARGET_HW)
 
 # HW
-$(TARGET_DIR)/$(TARGET_HW) : $(TARGET_DIR)/$(AES_KERNEL_LIB) 
-	$(AOC_CMD_X) $(AOC_FLAGS) $(AES_KERNEL_CL) \
+$(TARGET_DIR)/$(TARGET_HW) : $(TARGET_DIR)/$(AES_KERNEL_LIB) $(GZIP_SOURCES) #$(AES_KERNEL_CL)
+	$(AOC_CMD) $(AOC_FLAGS) $(KERNEL_CL) \
 		-L $(TARGET_DIR) -l $(AES_KERNEL_LIB) \
 		-o $(TARGET_DIR)/$(TARGET_HW) \
 		$(GZIP_FLAGS) -board=$(BOARD)
@@ -149,22 +151,6 @@ $(TARGET_DIR)/$(AES_KERNEL_LIB) : $(AES_KERNEL_XML) $(AES_SOURCES) $(TARGET_DIR)
 $(TARGET_DIR) :
 	$(ECHO)mkdir -p $(TARGET_DIR)
 
-
-# Run benchmark
-.PHONY: bench
-bench: host
-	aug=1; while [[ $$aug -le 37000 ]]; do \
-		./build/host file0.txt "$$aug" 10; sync; \
-      	((aug = aug*2)); \
-      	done; 
-
-split: 
-	split -b 2K file0.txt 
-
-.PHONY: create_files
-create_files: split
-	mv xaa file1.txt; rm xab 
-
 .PHONY: clean
 clean :
 	rm -f $(TARGET_DIR)/$(TARGET_SW)
@@ -172,3 +158,59 @@ clean :
 .PHONY: cleanall
 cleanall:
 	rm -rf $(TARGET_TAG)*
+
+sort-results:
+	for f in ./*.dat; do \
+		v=name.dat; \
+		sort -n -k 1 "$$f" > "$$v"; \
+		mv "$$v" "$$f"; \
+	done;
+
+clean-results:
+	rm fpga_deflate_*
+
+.PHONY: ratio
+ratio:
+	for f in /mnt/scratch/muellein/git/hana-io-tracing/results/2020-07-30-10-14-18/blocks/*; do \
+		p=`basename "$$f" | awk -F'[-.]' '{print $$2}'`; \
+		for g in /mnt/scratch/mchiosa/Datasets/Hana/files_ingo/"$$p"/*; do \
+			./build.hw.1e.16v.1ldb/host "$$g"; \
+			sleep 1; \
+		done; \
+	done;
+	$(MAKE) sort-results
+
+.PHONY: ratio-base
+ratio-base:
+	for f in /mnt/scratch/muellein/git/hana-io-tracing/results/2020-07-30-10-14-18/blocks/*; do \
+		p=`basename "$$f" | awk -F'[-.]' '{print $$2}'`; \
+		i=0; \
+		for g in /mnt/scratch/mchiosa/Datasets/Hana/files_ingo/"$$p"/*; do \
+			base64 "$$g" > sample.txt; \
+			./build.hw.1e.16v.1ldb/host sample.txt "$$p"; \
+			sleep 1; \
+			rm sample.txt; \
+			((i="$$i"+1)); \
+			if [ "$$i" -ge 100 ]; then \
+				break; \
+			fi; \
+		done; \
+	done;
+	$(MAKE) sort-results
+
+.PHONY: ratio-base-comp
+ratio-base-comp:
+	for item in 4096 8192 16384 32768 65536 131072 262144 524288 1048576 4194394 16777216; do \
+		i=0; \
+		for g in /mnt/scratch/mchiosa/Datasets/Hana/files_ingo/"$$item"/*; do \
+			base64 "$$g" > sample.txt; \
+                        ./build.hw.1e.16v.1ldb/host sample.txt "$$item"; \
+                        sleep 1; \
+                        rm sample.txt; \
+                        ((i="$$i"+1)); \
+			if [ "$$i" -ge 100 ]; then \
+                                break; \
+                        fi; \
+                 done; \
+        done;
+	$(MAKE) sort-results

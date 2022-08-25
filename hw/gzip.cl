@@ -34,79 +34,6 @@
 //but must change hash function to take advantage of that
 #define DEPTH 512
 
-/*///////////////////////////////////////////////////////////////////////
- *               AES                                                    *
- ************************************************************************/
-
-long8  aes_256(long8 x, int8 config, long16 key_lsb, long16 key_msb);
-long16 aes_key_256(int8 x, char flax);
-
-channel long16 chan_msb;
-channel long16 chan_lsb;
-
-channel struct huffman_output_t ch_encrypt_input __attribute__((depth(64)));
-channel struct huffman_output_t ch_encrypt_input_last_value __attribute__((depth(64)));
-
-union enc_t{
-  unsigned short data[VECX2];
-  long8 datalong;  
-};
-
-void compute_aes_internal(
-    global long8 *restrict out, 
-    int8 config_data,
-    unsigned int insize,
-    unsigned int engine_id) {
-
-    long16 round_keys[2];
-
-    unsigned int inpos  = 0;
-    unsigned int outpos = 0;
-    inpos += 1; //VEC;
-    
-    struct huffman_output_t data_input;
-    union enc_t data_enc;
-
-    round_keys[0] = read_channel_intel(chan_lsb);
-    round_keys[1] = read_channel_intel(chan_msb);
-
-    do
-    {
-        if(inpos<insize)
-            data_input = read_channel_intel(ch_encrypt_input);
-        else
-            data_input = read_channel_intel(ch_encrypt_input_last_value);
-      
-        if(data_input.write){
-
-            #pragma unroll
-            for(unsigned int i=0; i<VECX2; i++)
-                data_enc.data[i] = data_input.data[i];
-
-            out[outpos] = aes_256(data_enc.datalong, config_data, round_keys[0], round_keys[1]);    
-        }
-
-        outpos= data_input.write ? outpos + 1 : outpos;
-        inpos += 1; //VEC;
-
-    } while (inpos <= insize);
-}
-
-void kernel compute_aes0(global long8 *restrict out, int8 config_data, unsigned int insize) {
-     compute_aes_internal(out, config_data, insize,0);
-}
-
-void kernel aes_keygen(int8 key)
-{    
-    long16 round_key_lsb;
-    long16 round_key_msb;
-
-    round_key_lsb = aes_key_256(key,0x01);
-    round_key_msb = aes_key_256(key,0x02);
-
-    write_channel_intel(chan_lsb, round_key_lsb);
-    write_channel_intel(chan_msb, round_key_msb);  
-}
 
 /*///////////////////////////////////////////////////////////////////////
  *               load lz                    *
@@ -895,12 +822,19 @@ void store_huff_internal (
         #pragma unroll
         for (char duplicate_id = 0; duplicate_id < ENGINES; duplicate_id++) {
           outdata[duplicate_id] = read_channel_intel(ch_huffman_output[duplicate_id]);
+          #pragma unroll
+          for (char i = 0; i < VECX2; i++) {
+            all_channels_match &= (outdata[0].data[i] == outdata[duplicate_id].data[i]);
+          }
+          all_channels_match &= (outdata[0].write == outdata[duplicate_id].write);
         }
         
-        if(outdata[0].write){
-          write_channel_intel(ch_encrypt_input, outdata[0]);
-          outpos_huffman += 1;
+        #pragma unroll
+        for (char i = 0; i < VECX2; i++) {
+            if (outdata[0].write) output[VECX2 * outpos_huffman + i] = outdata[0].data[i];
         }
+        outpos_huffman = outdata[0].write ? outpos_huffman + 1 : outpos_huffman;
+
 
         //increment input position
         inpos += VEC;
@@ -918,7 +852,10 @@ void store_huff_internal (
       all_channels_match &= (outdata[0].write == outdata[duplicate_id].write);
     }
 
-    write_channel_intel(ch_encrypt_input_last_value, outdata[0]);
+    #pragma unroll
+    for (char i = 0; i < VECX2; i++) {
+        output[VECX2 * outpos_huffman + i] = outdata[0].data[i];
+    }
 
     // Store summary values from lz and huffman
     unsigned int fvp_val[ENGINES];
@@ -954,10 +891,11 @@ void store_huff_internal (
     do
     {
         outdata = read_channel_intel(ch_huffman_output[engine_id]);
-    
-        if (outdata.write) 
-            write_channel_intel(ch_encrypt_input, outdata[0]);
         
+        #pragma unroll
+        for (char i = 0; i < VECX2; i++) {
+            if (outdata.write) output[VECX2 * outpos_huffman + i] = outdata.data[i];
+        }
         outpos_huffman = outdata.write ? outpos_huffman + 1 : outpos_huffman;
 
         //increment input position
@@ -967,7 +905,9 @@ void store_huff_internal (
     
     // write remaining bits
     outdata = read_channel_intel(ch_huffman_output_last_value[engine_id]);
-    write_channel_intel(ch_encrypt_input_last_value, outdata);
+    for (char i = 0; i < VECX2; i++) {
+        output[VECX2 * outpos_huffman + i] = outdata.data[i];
+    }
 
     // Store summary values from lz and huffman
     out_info->fvp = read_channel_intel(ch_lz_out_first_valid_pos[engine_id]);

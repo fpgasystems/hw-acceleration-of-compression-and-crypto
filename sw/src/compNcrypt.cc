@@ -29,15 +29,16 @@
 //---------------------------------------------------------------------------------------
 
 #include <iostream>
+#include <stack>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <stack>
-#include <fstream>
-#include <map>
-#include <vector>
-#include <algorithm>
 
 #include "CL/opencl.h"
 #include "AOCLUtils/aocl_utils.h"
@@ -47,8 +48,6 @@
 
 #define TIMES 64
 #define STRING_BUFFER_LEN 1024
-static unsigned int LINE    = 512/32;
-static unsigned int BUFSIZE = LINE*4;
 
 #define xstr(s) str(s)
 #define str(s) #s
@@ -62,6 +61,49 @@ using namespace aocl_utils;
 // ACL runtime configuration
 //---------------------------------------------------------------------------------------
 
+// All kernels end in 0.  There may be 1,2,3 versions as well, depending on
+// value of ENGINES, but for now, not exercising them from the host.
+const char *gzip_kernel_name[] = {
+  "load_lz0",
+  "load_huff_coeff0",
+  "lz77_0",
+  "huff0",
+#if GZIP_ENGINES > 1
+  "lz77_1",
+  "huff1",
+#endif
+#if GZIP_ENGINES > 2
+  "lz77_2",
+  "huff2",
+#endif
+#if GZIP_ENGINES > 3
+  "lz77_3",
+  "huff3",
+#endif
+  "store_huff0"
+};
+
+enum GZIPKernels {
+  LOAD_LZ = 0,
+  LOAD_HUFF_COEFF,
+  LZ770,
+  HUFF0,
+#if GZIP_ENGINES > 1
+  LZ771,
+  HUFF1,
+#endif
+#if GZIP_ENGINES > 2
+  LZ772,
+  HUFF2,
+#endif
+#if GZIP_ENGINES > 3
+  LZ773,
+  HUFF3,
+#endif
+  STORE_HUFF,
+  NUM_KERNELS
+};
+
 // OpenCL runtime configuration
 static cl_platform_id platform    = NULL;
 static cl_device_id device        = NULL;
@@ -69,19 +111,17 @@ static cl_context context         = NULL;
 static cl_program program         = NULL;
 static cl_int status              = 0;
 
-
-static cl_command_queue aes_queue  = NULL;
-static cl_kernel aes_kernel_en     = NULL;
-static cl_kernel aes_kernel_key_en = NULL;
-static cl_kernel aes_kernel_de     = NULL;
-static cl_kernel aes_kernel_key_de = NULL;
+static cl_command_queue gzip_queue[GZIP_KERNELS];
+static cl_kernel gzip_kernel[GZIP_KERNELS];
 
 //---------------------------------------------------------------------------------------
 //  DATA BUFFERS on FPGA
 //---------------------------------------------------------------------------------------
+// GZIP
 static cl_mem input_buf          = NULL;
-static cl_mem output_aes_en_buf  = NULL;
-static cl_mem output_aes_de_buf  = NULL;
+static cl_mem huftable_buf       = NULL;
+static cl_mem out_info_buf       = NULL;
+static cl_mem output_huffman_buf = NULL;  // TODO: delete this buffer
 
 //---------------------------------------------------------------------------------------
 //  FUNCTION PROTOTYPES
@@ -90,15 +130,23 @@ static cl_mem output_aes_de_buf  = NULL;
 bool init(bool use_emulator);
 void cleanup();
 
-void encrypt_and_decrypt(const char *filename, unsigned int augment, unsigned int repet);
-void offload_to_FPGA(unsigned int *input, unsigned int insize, unsigned int *output_aes, cl_ulong &time_ns_aes_encrypt, cl_ulong &time_ns_aes_decrypt, unsigned int cache_lines);
+void compress_and_encrypt(const char *filename, unsigned int);
+
+cl_ulong offload_to_FPGA(unsigned char *input, unsigned int *huftable,
+    unsigned int insize, unsigned int outsize, unsigned char marker, unsigned int &fvp,
+    unsigned short *output_huffman, unsigned int &compsize_lz, unsigned int &compsize_huffman);
+
+int compute_on_host(unsigned char *input, huff_encodenode_t *tree, unsigned int insize,
+    unsigned int outsize, unsigned char marker, unsigned int fvp, unsigned char *output_lz,
+    unsigned short *output_huffman, unsigned int compsize_lz, unsigned int compsize_huffman,
+    unsigned int remaining_bytes);
 
 //---------------------------------------------------------------------------------------
 //  MAIN FUNCTION
 //---------------------------------------------------------------------------------------
 
 int main(int argc, char **argv) 
-{ 
+{	
   Options options(argc, argv);
 
   // Optional argument to specify whether the emulator should be used.
@@ -107,38 +155,35 @@ int main(int argc, char **argv)
   if (!init(use_emulator))
     return -1;
   
-  if (argc > 3) {
-    std::cout<<"File name  : "<< argv[1]<<std::endl;
-    std::cout<<"Augument   : "<< argv[2]<<std::endl;
-    std::cout<<"Repetitions: "<< argv[3]<<std::endl;
-    encrypt_and_decrypt(argv[1], atoi(argv[2]), atoi(argv[3]));
+  if (argc > 1) {
+    std::cout<<"File name: "<< argv[1]<< std::endl;
+    unsigned int original = atoi(argv[2]);
+    compress_and_encrypt(argv[1], original);
   }
-  else{
-    std::cerr << argv[0] << " <file> <augument> <repetitions>" << std::endl; 
-    encrypt_and_decrypt("file0.txt",1,1);
-  }
+  else
+    compress_and_encrypt("./file0.txt",0);
 
   cleanup();
   return 0;
 }
 
 //---------------------------------------------------------------------------------------
-//  ENCRYPT and DECRYPT
+//  COMPRESS AND ENCRYPT
 //---------------------------
-//  1- Do encryption on FPGA
-//  2- Do decryption on FPGA
-//  3- Verify the results is the same after decryption
+//  1- Create huffman tree and select marker on host
+//  2- Deflate input file on *FPGA*
+//  3- Inflate FPGA output on host and compare to input for verification 
 //  4- Print result and cleanup
 //---------------------------------------------------------------------------------------
 
-void encrypt_and_decrypt(const char *filename, unsigned int augment, unsigned int repet)
+void compress_and_encrypt(const char *filename, unsigned int original)
 {
   //-------------------------------------------------------------------------------------
   // 0- Input file
   //-------------------------------------------------------------------------------------
 
   //Kernel Variables
-  unsigned int insize, rounded_size;
+  unsigned int insize, outsize;
   FILE *f;
 
   //Open input file
@@ -160,168 +205,132 @@ void encrypt_and_decrypt(const char *filename, unsigned int augment, unsigned in
   else
     std::cout<<"File size [B]: "<<insize<<std::endl;
 
-  if(insize%64==0)
-    rounded_size = insize;
-  else
-    rounded_size = ((unsigned int)(insize/64)+1)*64;
-  
-  std::cout<<"Rounded size [B]: "<<rounded_size<<std::endl;
-  unsigned int cache_lines = 64;
+  // Worst case output_lz buffer size (too pessimistic for now)
+  outsize = insize*2;
 
   // Host Buffers
-  unsigned char  *input_file     = (unsigned char *)alignedMalloc(rounded_size*augment);
-  unsigned int   *output_aes_en  = (unsigned int *)alignedMalloc(rounded_size*augment);
-  unsigned int   *output_aes_de  = (unsigned int *)alignedMalloc(rounded_size*augment);
+  unsigned char  *input          = (unsigned char *)alignedMalloc(insize);
+  unsigned char  *output_lz      = (unsigned char *)alignedMalloc(outsize);
+  unsigned short *output_huffman = (unsigned short *)alignedMalloc(outsize);
 
   // Read and close input file 
   if (fseek(f, 0, SEEK_SET) != 0)
-       exit(1);
-  if (fread(input_file, 1, insize, f) != insize)
-        exit(1);
+    exit(1);
+  if (fread(input, 1, insize, f) != insize)
+    exit(1);
   fclose(f);
+
+  // here truncate the file so that the number of chars is a multiple of VEC
+  int remaining_bytes = insize % (2*VEC);
+  insize -= remaining_bytes;
   
-  for(unsigned i=1; i<augment; i++)
-    memcpy((input_file+i*rounded_size), input_file, (size_t)rounded_size); 
+  //-------------------------------------------------------------------------------------
+  // 1- Create Huffman Tree on host
+  //-------------------------------------------------------------------------------------
+  unsigned int *huftable   = (unsigned int *)alignedMalloc(1024);
+  huff_encodenode_t *tree  = (huff_encodenode_t *)malloc(MAX_TREE_NODES * sizeof(huff_encodenode_t));
+  huff_encodenode_t **root = &tree;
+  unsigned char marker     = Compute_Huffman(input, insize, huftable, root);
+
+  //Print_Huffman(tree);
+  
+  //-------------------------------------------------------------------------------------
+  // 2- Send input file on *FPGA* for Compresion and Encryption
+  //-------------------------------------------------------------------------------------
+
+  unsigned int compsize_lz = 0;
+  unsigned int compsize_huffman = 0;
+  unsigned int fvp = 0;
+   
+  memset(output_huffman, 0, outsize);
+  
+  cl_ulong time_ns_profiler_gzip = offload_to_FPGA(input, huftable, insize, outsize, marker,
+      fvp, output_huffman, compsize_lz, compsize_huffman);
+   
+  std::cout<<"Remaining bytes: "<<remaining_bytes<<std::endl;
+  std::cout<<"Marker         : "<<static_cast<unsigned>(marker)<<std::endl;
+  
+//  std::fstream file;
+//  file.open("file_compressed.txt", std::ios::out);
+// 
+//  unsigned char *ptr_huff = (unsigned char*) output_huffman;
+//  for(unsigned int i=0; i<(2*compsize_huffman); i++){
+//     file<<*ptr_huff;
+//     ptr_huff++;
+//  }
+//
+//  file.close();
+
+  //std::cout<<"Huffman table"<<std::endl;
+  //for(unsigned int i=0; i<256; i++)
+  //  std::cout<<huftable[i]<<" ";
+  //std::cout<<std::endl;
 
   //-------------------------------------------------------------------------------------
-  // 1-2- Encrypt and Decrypt
+  // 3- Decrypt data on *host* and compare to compressed data for verification
   //-------------------------------------------------------------------------------------
-  unsigned int *input = (unsigned int *)input_file;
-  memset(output_aes_en, 0, rounded_size);
-  memset(output_aes_de, 0, rounded_size);
   
-  
-  std::vector<float> th_encrypt;
-  std::vector<float> th_decrypt;
+  // TODO
 
-  cl_ulong time_ns_profiler_aes_encrypt = 0;
-  cl_ulong time_ns_profiler_aes_decrypt = 0;
-    
-  //memset(input,0, rounded_size);
-  for(unsigned int r=0; r<repet; r++){
-  	offload_to_FPGA(input, rounded_size*augment, output_aes_de, time_ns_profiler_aes_encrypt, time_ns_profiler_aes_decrypt, cache_lines);
-  	th_encrypt.push_back((double)rounded_size*augment/(double)time_ns_profiler_aes_encrypt);
- 	th_decrypt.push_back((double)rounded_size*augment/(double)time_ns_profiler_aes_decrypt);     
-  }
-   
-   
   //-------------------------------------------------------------------------------------
-  // 3- Verify results
+  // 4- Decrypt and decompress FPGA output on host and compare to input for verification
   //-----------------------------------------------------------------
   int numerrors = 0;
-  const void *s1 = (const void *)input;
-  const void *s2 = (const void *)output_aes_de;
-  
-  numerrors = memcmp(input, output_aes_de, (size_t)rounded_size*augment);
-  /*
-     for(int i=0; i<BUFSIZE; i+=LINE){
-       printf("plaintxt : 0x");
-     for(int k=LINE-1; k>=0; k--)
-      printf("%08x",input[i+k]);
-     printf("\ndecrypted: 0x");  
-     for(int k=LINE-1; k>=0; k--)
-       printf("%08x",output_aes_de[i+k]);
-     printf("\n"); 
-    }    
-  */
+  numerrors = compute_on_host(input, tree, insize, outsize, marker, fvp, output_lz,
+              output_huffman, compsize_lz, compsize_huffman, remaining_bytes);
+
   //---------------------------------------------------------------------------
-  // 4- Clean up
+  // 5- Print result and cleanup
   //---------------------------------------------------------------------------
 
   if (numerrors == 0)
     std::cout << "PASSED, no errors" << std::endl;
   else
     std::cerr << "FAILED, " << numerrors << " errors" << std::endl;
-
-  //double throughput_aes_enc = (double)rounded_size*augment / double(time_ns_profiler_aes_encrypt);
-  //double throughput_aes_dec = (double)rounded_size*augment / double(time_ns_profiler_aes_decrypt);
-
-  //printf("Throughput encrypt    = %.5f GB/s \n", throughput_aes_enc);
-  //printf("Throughput decryption = %.5f GB/s \n", throughput_aes_dec);
   
-  std::sort(th_encrypt.begin(),th_encrypt.end());
-  std::sort(th_decrypt.begin(),th_decrypt.end());
-  
-  float min_encrypt = th_encrypt[0];
-  float min_decrypt = th_decrypt[0];
-  float max_encrypt = th_encrypt[repet-1];
-  float max_decrypt = th_decrypt[repet-1];
+  double throughput = (double)insize / double(time_ns_profiler_gzip);
+  double thr_comp   = (double)compsize_huffman / double(time_ns_profiler_gzip); 
+  float  compression_ratio = (float)(insize)/compsize_huffman;
+  printf("Compression Ratio = %.3f \n", compression_ratio);
 
-  float p25_encrypt = 0.0;
-  float p50_encrypt = 0.0;
-  float p75_encrypt = 0.0;
-  
-  float p25_decrypt = 0.0;
-  float p50_decrypt = 0.0;
-  float p75_decrypt = 0.0;
+float multiplier = 1.0;
+#ifdef GZIP_ENGINES
+  // Every engine should be doing identical work, but credit them as if they
+  // had all done useful work
+  multiplier *= GZIP_ENGINES;
+#endif
+  printf("Throughput = %.5f GB/s \n", throughput * multiplier);
 
-  if(repet>=4){
-      p25_encrypt = th_encrypt[(repet/4)-1];
-      p50_encrypt = th_encrypt[(repet/2)-1];
-      p75_encrypt = th_encrypt[(repet*3)/4-1];
-
-      p25_decrypt = th_decrypt[(repet/4)-1];
-      p50_decrypt = th_decrypt[(repet/2)-1];
-      p75_decrypt = th_decrypt[(repet*3)/4-1];
-  }
-
-  float p1_encrypt  = 0.0;
-  float p5_encrypt  = 0.0;
-  float p95_encrypt = 0.0;
-  float p99_encrypt = 0.0;
-  
-  float p1_decrypt  = 0.0;
-  float p5_decrypt  = 0.0;
-  float p95_decrypt = 0.0;
-  float p99_decrypt = 0.0;
-
-  if (repet >= 100) {
-     p1_encrypt  = th_encrypt[((repet)/100)-1];
-     p5_encrypt  = th_encrypt[((repet*5)/100)-1];
-     p95_encrypt = th_encrypt[((repet*95)/100)-1];
-     p99_encrypt = th_encrypt[((repet*99)/100)-1];
-  
-     p1_decrypt  = th_decrypt[((repet)/100)-1];
-     p5_decrypt  = th_decrypt[((repet*5)/100)-1];
-     p95_decrypt = th_decrypt[((repet*95)/100)-1];
-     p99_decrypt = th_decrypt[((repet*99)/100)-1];
-
-  }
-  
-  th_encrypt.clear();
-  th_decrypt.clear();
-
-  FILE *file;
-  //Open input file
-  file = fopen("aes_throughput_encrypt_results.txt", "a");
-
-  //input files size
-  unsigned int file_size = get_filesize(file);
-  if (file_size == 0)
-     fprintf(file, "file_size repet min max p1 p5 p25 p50 p75 p95 p99 \n");
- 
-  fseek(file, file_size, SEEK_END); 
-  unsigned int total_size = rounded_size*augment;
-  fprintf(file,"%u %u %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\n",total_size, repet, min_encrypt, max_encrypt, p1_encrypt, p5_encrypt, p25_encrypt, p50_encrypt, p75_encrypt, p95_encrypt, p99_encrypt);
-   
-  fclose(file);
-
-  file = fopen("aes_throughput_decrypt_results.txt", "a");
-  //input files size
-  file_size = get_filesize(file);
-  if (file_size == 0)
-   	fprintf(file, "file_size repet min max p1 p5 p25 p50 p75 p95 p99 \n");
-   
-  fseek(file, file_size, SEEK_END);
-  fprintf(file,"%u %u %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\n",total_size, repet, min_decrypt, max_decrypt, p1_decrypt, p5_decrypt, p25_decrypt, p50_decrypt, p75_decrypt, p95_decrypt, p99_decrypt);
-   
-  fclose(file);
-    
   //free buffers
   //??free(nodes);
   alignedFree(input);
-  alignedFree(output_aes_en);
-  alignedFree(output_aes_de);
+  alignedFree(output_lz);
+  alignedFree(output_huffman);
+
+  if(numerrors==0){
+
+    FILE *file_results;
+    //Open input file
+    char cval[20]; 
+    sprintf(cval,"%u",original);
+    std::string name = "fpga_deflate_";
+    name.append((const char *)cval);
+    name.append("_");
+    sprintf(cval,"%u",insize);
+    name.append((const char *)cval);
+    name.append(".dat");
+  
+    file_results = fopen(name.c_str(), "a");
+  
+    //input files size
+    unsigned int file_results_size = get_filesize(file_results);
+    if (file_results_size == 0)
+      fprintf(file_results, "file_size ratio throughput thr_comp\n");
+   
+    fseek(file_results, file_results_size, SEEK_END); 
+    fprintf(file_results,"%u %.5f %.5f %.5f\n", insize, compression_ratio, throughput, thr_comp);
+    fclose(file_results);
+  }
 }
 
 //---------------------------------------------------------------------------------------
@@ -372,12 +381,14 @@ bool init(bool use_emulator)
   checkError(status, "Failed to create context");
 
   // Create command queues
-  aes_queue = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &status);
-  checkError(status, "Failed to create command queue AES");
+  for (int k = 0; k < GZIP_KERNELS; ++k) {
+    gzip_queue[k] = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &status);
+    checkError(status, "Failed to create command queue GZIP");
+  }
 
   // Create the program.
   std::string path = xstr(BUILD_FOLDER);
-  path += "/encrypt_decrypt";
+  path += "/compNcrypt";
   
   std::string binary_file = getBoardBinaryFile(path.c_str(), device);
   std::cout << "Programming FPGA with " << binary_file << std::endl;
@@ -387,17 +398,14 @@ bool init(bool use_emulator)
   status = clBuildProgram(program, 0, NULL, "", NULL, NULL);
   checkError(status, "Failed to build program");
 
-  aes_kernel_en = clCreateKernel(program, "aes_encrypt", &status);
-  checkError(status, "Failed to create AES Encryption kernel");
-
-  aes_kernel_key_en = clCreateKernel(program, "aes_keygen_encrypt", &status);
-  checkError(status, "Failed to create AES KEY Encryption kernel");
+  for (int k = 0; k < GZIP_KERNELS; ++k) {
+    // Create the kernel - name passed in here must match kernel name in the
+    // original CL file, that was compiled into an AOCX file using the AOC tool
+    const char *kernel_name1 = gzip_kernel_name[k];
+    gzip_kernel[k] = clCreateKernel(program, kernel_name1, &status);
+    checkError(status, "Failed to create GZIP kernel %s", kernel_name1);
+  }
   
-  aes_kernel_de = clCreateKernel(program, "aes_decrypt", &status);
-  checkError(status, "Failed to create AES Decryption kernel");
-
-  aes_kernel_key_de = clCreateKernel(program, "aes_keygen_decrypt", &status);
-  checkError(status, "Failed to create AES KEY Decryption kernel");
   return true;
 }
 
@@ -409,199 +417,311 @@ bool init(bool use_emulator)
 //---------------------------------------------------------------------------------------
 
 void cleanup()
-{ 
-  if (aes_kernel_en)
-    clReleaseKernel(aes_kernel_en);
-  if (aes_kernel_key_en)
-    clReleaseKernel(aes_kernel_key_en);
-  if (aes_kernel_de)
-    clReleaseKernel(aes_kernel_de);
-  if (aes_kernel_key_de)
-    clReleaseKernel(aes_kernel_key_de);
+{	
+  //free kernel/queue/program/context
+  for (int k = 0; k < GZIP_KERNELS; ++k) {
+    if (gzip_kernel[k])
+      clReleaseKernel(gzip_kernel[k]);
+    if (gzip_queue[k])
+      clReleaseCommandQueue(gzip_queue[k]);
+  }
+
   if (program)
     clReleaseProgram(program);
   if (context)
-    clReleaseContext(context);  
+    clReleaseContext(context);	
 
   //free in/out buffers
   if (input_buf)
     clReleaseMemObject(input_buf);
-  if (output_aes_en_buf)
-    clReleaseMemObject(output_aes_en_buf);
-  if(output_aes_de_buf)
-    clReleaseMemObject(output_aes_de_buf);
-
+  if (huftable_buf)
+    clReleaseMemObject(huftable_buf);
+  if (output_huffman_buf)
+    clReleaseMemObject(output_huffman_buf);
+  if (out_info_buf)
+    clReleaseMemObject(out_info_buf);
 }
+
 
 //---------------------------------------------------------------------------------------
 //  Offload to FPGA
 //---------------------------
 // 
 //---------------------------------------------------------------------------------------
-void offload_to_FPGA(unsigned int *input, unsigned int insize, unsigned int *output_aes_de, cl_ulong &time_ns_aes_encrypt, cl_ulong &time_ns_aes_decrypt, unsigned int cache_lines)
+
+cl_ulong offload_to_FPGA(unsigned char *input, unsigned int *huftable,
+    unsigned int insize, unsigned int outsize, unsigned char marker, unsigned int &fvp,
+    unsigned short *output_huffman, unsigned int &compsize_lz, unsigned int &compsize_huffman)
 {
   cl_int status;
-  std::cout<<"offload insize:"<<insize<<std::endl; 
-  // --- AES ---
-  aes_config aes_config_run;
+  gzip_out_info_t out_info;
   
-  aes_config_run.elements[0] = cache_lines;// N is number of lines, one line = 512b=64B 
-  aes_config_run.elements[1] = 0;
-  aes_config_run.cntr_nonce[0] = 0x00000000; //rand(); // LS uint nonce
-  aes_config_run.cntr_nonce[1] = 0x00000000; //rand(); // MS uint nonce
-  aes_config_run.iv[0] = 0x00000000;//rand(); // LS uint iv
-  aes_config_run.iv[1] = 0x00000000;//rand(); // uint iv
-  aes_config_run.iv[2] = 0x00000000;//rand(); // uint iv
-  aes_config_run.iv[3] = 0x00000000;//rand(); // MS uint iv
-
-  key_config key_config_run;
-  key_config_run.key[0] = 0x00000000; // LS uint
-  key_config_run.key[1] = 0xFFFFFFFF;
-  key_config_run.key[2] = 0xFFFFFFFF;
-  key_config_run.key[3] = 0xFFFFFFFF;
-  key_config_run.key[4] = 0xFFFFFFFF;
-  key_config_run.key[5] = 0xFFFFFFFF;
-  key_config_run.key[6] = 0x00000001;
-  key_config_run.key[7] = 0x00000001; // MS uint
-
-  #ifdef DEBUG
-    for (int i=7; i>=0; i--)
-      printf("%d=%08x\n", i, key_config_run.key[i]);
-  #endif
-  // --- AES ---
-
   // Input buffers
   input_buf = clCreateBuffer(context, CL_MEM_READ_ONLY, insize, NULL, &status);
   checkError(status, "Failed to create buffer for input");
 
-  output_aes_en_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, insize, NULL, &status);
-  checkError(status, "Failed to create buffer for output_aes_encryption"); 
+  huftable_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, 1024, NULL, NULL);
+  checkError(status, "Failed to create buffer for huftable");
 
-  output_aes_de_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, insize, NULL, &status);
-  checkError(status, "Failed to create buffer for output_aes_decryption");
+  out_info_buf = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(gzip_out_info_t), NULL, &status);
+  checkError(status, "Failed to create buffer for out_info");  
+
+  // Output buffers
+  output_huffman_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, outsize, NULL, &status);
+  checkError(status, "Failed to create buffer for output_huffman"); 
+  
 
   // Transfer inputs. Each of the host buffers supplied to clEnqueueWriteBuffer here
   // should be "aligned" to ensure that DMA is used for the host-to-device transfer.
-  cl_event write_event; 
-
-  status = clEnqueueWriteBuffer(aes_queue, input_buf, CL_FALSE, 0,
-      insize, input, 0, NULL, &write_event);
+  cl_event write_event[2];
+  status = clEnqueueWriteBuffer(gzip_queue[LOAD_LZ], input_buf, CL_FALSE, 0,
+      insize, input, 0, NULL, &write_event[0]); // TODO: sizeof(char)
   checkError(status, "Failed to transfer raw input");
+
+  status = clEnqueueWriteBuffer(gzip_queue[LOAD_HUFF_COEFF], huftable_buf, CL_TRUE, 0, 1024,
+      huftable, 0, NULL, &write_event[1]);
+  checkError(status, "Failed to transfer huftable");
 
   //-------------------------------------------------------------------------------------
   // [openCL] Set kernel arguments and enqueue commands into kernel
   //-------------------------------------------------------------------------------------
-  unsigned int line_size = insize/64;
-  // AES-256-encryption
-  unsigned int argi = 0;
-   
-  status = clSetKernelArg(aes_kernel_en, argi++, sizeof(cl_mem), &input_buf); 
-  checkError(status, "Failed to set kernel arg %d", argi - 1);
 
-  status = clSetKernelArg(aes_kernel_en, argi++, sizeof(cl_mem), &output_aes_en_buf);
-  checkError(status, "Failed to set kernel arg %d", argi - 1);
+  unsigned argi, k;
 
-  status = clSetKernelArg(aes_kernel_en, argi++, sizeof(cl_int8), &aes_config_run);
-  checkError(status, "Failed to set kernel arg %d", argi - 1);
+  // LZ input loads
+  argi = 0;
+  k = LOAD_LZ;
 
-  status = clSetKernelArg(aes_kernel_en, argi++, sizeof(cl_int), (void *) &line_size);
-  checkError(status, "Failed to set kernel arg %d", argi - 1);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_mem), &input_buf);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
 
   argi = 0;
-  status = clSetKernelArg(aes_kernel_key_en, argi++, sizeof(cl_int8), &key_config_run);
-  checkError(status, "Failed to set kernel_key arg %d", argi - 1);
+  k = LOAD_HUFF_COEFF;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_mem), &huftable_buf);
+
+  argi = 0;
+  k = LZ770;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_char), (void *) &marker);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+
+  argi = 0;
+  k = HUFF0;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+
+#if GZIP_ENGINES > 1
+  argi = 0;
+  k = LZ771;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_char), (void *) &marker);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+
+  argi = 0;
+  k = HUFF1;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+#endif
+
+#if GZIP_ENGINES > 2
+  argi = 0;
+  k = LZ772;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_char), (void *) &marker);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+
+  argi = 0;
+  k = HUFF2;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+#endif
+
+#if GZIP_ENGINES > 3
+  argi = 0;
+  k = LZ773;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_char), (void *) &marker);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+
+  argi = 0;
+  k = HUFF3;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+#endif
+
+  argi = 0;
+  k = STORE_HUFF;
+
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_int), (void *) &insize);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_mem), &output_huffman_buf);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
+  status = clSetKernelArg(gzip_kernel[k], argi++, sizeof(cl_mem), &out_info_buf);
+  checkError(status, "Failed to set argument %d on kernel %s", argi - 1, gzip_kernel_name[k]);
   
-  // AES-256-decryption
-  argi = 0;
-
-  status = clSetKernelArg(aes_kernel_de, argi++, sizeof(cl_mem), &output_aes_en_buf); 
-  checkError(status, "Failed to set kernel arg %d", argi - 1);
-
-  status = clSetKernelArg(aes_kernel_de, argi++, sizeof(cl_mem), &output_aes_de_buf);
-  checkError(status, "Failed to set kernel arg %d",argi-1);
-
-  status = clSetKernelArg(aes_kernel_de, argi++, sizeof(cl_int8), &aes_config_run);
-  checkError(status, "Failed to set kernel arg %d", argi - 1);
-
-  status = clSetKernelArg(aes_kernel_de, argi++, sizeof(cl_int), (void *) &line_size);
-  checkError(status, "Failed to set kernel arg %d", argi - 1);
-
-  argi = 0;
-  status = clSetKernelArg(aes_kernel_key_de, argi++, sizeof(cl_int8), &key_config_run);
-  checkError(status, "Failed to set kernel_key arg %d", argi - 1);
-
   // Launch kernels
-  cl_event key_event[2];
-  cl_event kernel_event[2]; 
-  cl_event finish_event;
+  cl_event kernel_event[6]; 
+  cl_event finish_event[2];
   
   const size_t global_work_size = 1;
   const size_t local_work_size  = 1;
-  
-  // DEBUG
-  unsigned int *output_aes_encr = (unsigned int *)alignedMalloc(insize);
 
-  // Launch kernel_key
-  status = clEnqueueNDRangeKernel(aes_queue, aes_kernel_key_en, 1, NULL, &global_work_size,
-      &local_work_size, 1, &write_event, &key_event[0]); 
-  checkError(status, "Failed to launch AES KEY Encryption kernel");
-  if(!status)
-    std::cout<<"Launched kernel: aes_kernel_key"<<std::endl;
-  
-  status = clEnqueueNDRangeKernel(aes_queue, aes_kernel_key_de, 1, NULL, &global_work_size,
-      &local_work_size, 1, &write_event, &key_event[1]); 
-  checkError(status, "Failed to launch AES KEY Decryption kernel");
-  if(!status)
-    std::cout<<"Launched kernel: aes_kernel_key_de"<<std::endl;
-  
-  // Launch aes kernels
-  
-  status = clEnqueueNDRangeKernel(aes_queue, aes_kernel_en, 1, NULL, &global_work_size,
-      &local_work_size, 2, key_event, &kernel_event[0]);
-  checkError(status, "Failed to launch AES Encryption kernel");
-  if(!status)
-    std::cout<<"Launched kernel: aes_kernel encryption"<<std::endl;
+  // Launch gzip kernels
+  for (int k = 0; k < GZIP_KERNELS; ++k) { 
+    // Use a global work size corresponding to the number of elements to process on
+    // for the "task" it is just equal to 1
+    //
+    // Events are used to ensure that the kernel is not launched until
+    // the writes to the input buffers have completed.
+    
+    status = clEnqueueNDRangeKernel(gzip_queue[k], gzip_kernel[k], 1, NULL,
+        &global_work_size, &local_work_size, 2, write_event, &kernel_event[k]);
+    // don't forget to adjust the number of events when enqueuing more read buffers
+    checkError(status, "Failed to launch GZIP kernel");
 
-  status = clEnqueueNDRangeKernel(aes_queue, aes_kernel_de, 1, NULL, &global_work_size,
-      &local_work_size, 1, &kernel_event[0], &kernel_event[1]);
-  checkError(status, "Failed to launch AES Decryption kernel");
-  if(!status)
-    std::cout<<"Launched kernel: aes_kernel decryption"<<std::endl;
-
-  status = clFinish(aes_queue);
-  checkError(status, "Failed to finish aes_queue decryption");
+    if(!status)
+      std::cout<<"Launched kernel: "<< gzip_kernel_name[k]<<std::endl;
+  }
 
   //-------------------------------------------------------------------------------------
   // [openCL] Dequeue read buffers from kernel and verify results from them
   //-------------------------------------------------------------------------------------
-
-  status = clEnqueueReadBuffer(aes_queue, output_aes_de_buf, CL_FALSE, 0,
-           insize, output_aes_de, 1, &kernel_event[1], &finish_event);
-  checkError(status, "Failed to read back decrypted data");
-
-  //DEBUG
-  //status = clEnqueueReadBuffer(aes_queue, output_aes_en_buf, CL_FALSE, 0,
-  //         insize, output_aes_encr, 0, NULL, NULL);
-  // checkError(status, "Failed to read back decrypted data");
   
+  status = clEnqueueReadBuffer(gzip_queue[STORE_HUFF], out_info_buf, CL_FALSE, 0,
+           sizeof(gzip_out_info_t), &out_info, 1, &kernel_event[STORE_HUFF], &finish_event[0]);
+  checkError(status, "Failed to read back information data");
+
+  status = clEnqueueReadBuffer(gzip_queue[STORE_HUFF], output_huffman_buf, CL_FALSE, 0,
+           outsize, output_huffman, 1, &kernel_event[STORE_HUFF], &finish_event[1]);
+  checkError(status, "Failed to read back encrypted data");
+  
+//  for(int i=0; i<out_info.compsize_huffman; i++)
+//     std::cout<<output_huffman[i]<<" ";
+//
+//  std::cout<<std::endl;
+
   // Release local events.
-  clReleaseEvent(write_event);
+  clReleaseEvent(write_event[0]);
+  clReleaseEvent(write_event[1]);
 
   // Wait for all devices to finish.
-  clWaitForEvents(1, &finish_event);
+  clWaitForEvents(2, finish_event);
 
   // Get kernel times using the OpenCL event profiling API from the Huffman kernel.
-  time_ns_aes_encrypt = getStartEndTime(&kernel_event[0],1);
-  time_ns_aes_decrypt = getStartEndTime(&kernel_event[1],1);
+  cl_ulong time_ns_profiler = getStartEndTime(kernel_event[HUFF0]);
 
   // Release all events
-  for (unsigned k = 0; k < 2; k++){  
+  for (unsigned k = 0; k < GZIP_KERNELS; ++k)
     clReleaseEvent(kernel_event[k]);
-    clReleaseEvent(key_event[k]);
-  }
 
-  clReleaseEvent(finish_event); 
+  clReleaseEvent(finish_event[0]); 
+  clReleaseEvent(finish_event[1]);
 
+  // Return results
+  fvp = out_info.fvp;
+  compsize_lz = out_info.compsize_lz;
+  compsize_huffman = out_info.compsize_huffman;
+
+  std::cout<<"FVP          : "<<fvp<<std::endl;
+  std::cout<<"COM size lz  : "<<compsize_lz<<std::endl;
+  std::cout<<"COM size huff: "<<compsize_huffman<<std::endl;
+
+  return time_ns_profiler;
 }
 
+//---------------------------------------------------------------------------------------
+//  Compute on HOST TODO move to gzip_tools
+//---------------------------
+//
+//---------------------------------------------------------------------------------------
 
+int compute_on_host(unsigned char *input, huff_encodenode_t *tree, unsigned int insize,
+    unsigned int outsize, unsigned char marker, unsigned int fvp,
+    unsigned char *output_lz, unsigned short *output_huffman, unsigned int compsize_lz, 
+    unsigned int compsize_huffman, unsigned int remaining_bytes)
+{	
+  unsigned char *output_huffman_char = (unsigned char *)alignedMalloc(outsize);
+  unsigned char *decompress_lz       = (unsigned char *)alignedMalloc(outsize);
+  unsigned char *decompress_huff     = (unsigned char *)alignedMalloc(outsize);
+  unsigned char *decompress_huff_lz  = (unsigned char *)alignedMalloc(outsize);
+  
+  //convert output_huffman from shorts to chars
+  for (int i = 0; i < compsize_huffman; i++) 
+  {
+    //transform from shorts to chars
+    short comp_short = output_huffman[i/2];
+    if (i%2 == 0)
+      comp_short >>= 8;
+    unsigned char comp_char = comp_short;
+    output_huffman_char[i] = comp_char;
+  }
+
+  //---------------------------------------
+  // DECOMPRESS HUFFMAN
+  //---------------------------------------
+
+  Huffman_Uncompress(output_huffman_char, decompress_huff, tree, compsize_huffman,
+      compsize_lz, marker);
+
+  //append last VEC bytes starting from fvp
+  for (int i = fvp; i < VEC; i++)
+  {
+    decompress_huff[compsize_lz++] = input[insize-VEC+i];
+    if (input[insize-VEC+i] == marker)
+      decompress_huff[compsize_lz++] = 0;
+  }
+
+  //append to output_lz the ommitted bytes
+  for (int i = 0; i < remaining_bytes; i++)
+  {
+    decompress_huff[compsize_lz++] = input[insize++];
+    if (input[insize-1] == marker)
+      decompress_huff[compsize_lz++] = 0;
+  }
+
+  //---------------------------------------
+  // DECOMPRESS LZ
+  //---------------------------------------
+
+  // Compare input / output_lz data 
+  int err_count = 0;
+
+  err_count += LZ_Uncompress(decompress_huff, decompress_huff_lz, compsize_lz);
+
+  //---------------------------------------
+
+  for (int k = 0; k < insize; k++)
+  {
+    if (input[k] != decompress_huff_lz[k])
+    {
+      err_count++;
+      if (err_count < 10)
+      {
+        printf( "%d: %d '%c'!= %d '%c' errr\n", k, decompress_huff_lz[k],
+            decompress_huff_lz[k], input[k], input[k]);
+      }
+    }
+  }
+
+  alignedFree(decompress_lz);
+  alignedFree(decompress_huff);
+  alignedFree(decompress_huff_lz);
+  alignedFree(output_huffman_char);
+
+  return err_count;
+}

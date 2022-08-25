@@ -1,7 +1,7 @@
 <RTL_SPEC>
   <!-- 'name' is how this function will be called from an OpenCL kernel.
        'module' is the top-level HDL module name that implements the function. -->
-  <FUNCTION name="aes_256_decrypt" module="aes_user_intel">
+  <FUNCTION name="aes_256" module="aes_user_intel">
     <ATTRIBUTES>
       <!-- Setting IS_STALL_FREE="yes" means the function neither generates stalls internally nor can it 
            properly handle incoming stalls (because it simply ignores its stall/valid inputs). If set
@@ -61,30 +61,30 @@
       <FILE name="c_model.cl" />
     </C_MODEL> 
     <REQUIREMENTS>
-      <FILE name="aes_user_intel.sv" />
-      <FILE name="aes_ctrl_intel.sv" />
-      <FILE name="s_box_lut.vhd" />
-      <FILE name="pipe_reg.vhd" />
-      <FILE name="mix_columns.vhd" />
-      <FILE name="key_pipe_stage.vhd" />
-      <FILE name="key_pipe_reg.vhd" />
-      <FILE name="key_pipeline.vhd" />
-      <FILE name="key_expansion.vhd" />
-      <FILE name="inv_shift_rows.vhd" />
-      <FILE name="inv_s_box_lut.vhd" />
-      <FILE name="inv_mix_columns.vhd" />
-      <FILE name="gf_mult.vhd" />
-      <FILE name="shift_rows.vhd" />
-      <FILE name="utils.vhd" />
-      <FILE name="data_pipeline.vhd" />
-      <FILE name="aes_round_last.vhd" />
-      <FILE name="aes_round.vhd" />
-      <FILE name="aes_pipe_stage.vhd" />
-      <FILE name="aes_pipeline.vhd" />
-      <FILE name="aes_top.vhd" />
+      <FILE name="aes/aes_user_intel.sv" />
+      <FILE name="aes/aes_ctrl_intel.sv" />
+      <FILE name="aes/s_box_lut.vhd" />
+      <FILE name="aes/pipe_reg.vhd" />
+      <FILE name="aes/mix_columns.vhd" />
+      <FILE name="aes/key_pipe_stage.vhd" />
+      <FILE name="aes/key_pipe_reg.vhd" />
+      <FILE name="aes/key_pipeline.vhd" />
+      <FILE name="aes/key_expansion.vhd" />
+      <FILE name="aes/inv_shift_rows.vhd" />
+      <FILE name="aes/inv_s_box_lut.vhd" />
+      <FILE name="aes/inv_mix_columns.vhd" />
+      <FILE name="aes/gf_mult.vhd" />
+      <FILE name="aes/shift_rows.vhd" />
+      <FILE name="aes/utils.vhd" />
+      <FILE name="aes/data_pipeline.vhd" />
+      <FILE name="aes/aes_round_last.vhd" />
+      <FILE name="aes/aes_round.vhd" />
+      <FILE name="aes/aes_pipe_stage.vhd" />
+      <FILE name="aes/aes_pipeline.vhd" />
+      <FILE name="aes/aes_top.vhd" />
     </REQUIREMENTS>
   </FUNCTION>
-    <FUNCTION name="aes_key_256_decrypt" module="key_user_intel">
+    <FUNCTION name="aes_key_256" module="key_user_intel">
     <ATTRIBUTES>
       <!-- Setting IS_STALL_FREE="yes" means the function neither generates stalls internally nor can it 
            properly handle incoming stalls (because it simply ignores its stall/valid inputs). If set
@@ -142,14 +142,14 @@
       <FILE name="c_model.cl" />
     </C_MODEL> 
     <REQUIREMENTS>
-      <FILE name="key_user_intel.sv" />
-      <FILE name="s_box_lut.vhd" />
-      <FILE name="key_pipe_stage.vhd" />
-      <FILE name="key_pipe_reg.vhd" />
-      <FILE name="key_pipeline.vhd" />
-      <FILE name="key_expansion.vhd" />
-      <FILE name="utils.vhd" />
-      <FILE name="key_top.vhd" />
+      <FILE name="aes/key_user_intel.sv" />
+      <FILE name="aes/s_box_lut.vhd" />
+      <FILE name="aes/key_pipe_stage.vhd" />
+      <FILE name="aes/key_pipe_reg.vhd" />
+      <FILE name="aes/key_pipeline.vhd" />
+      <FILE name="aes/key_expansion.vhd" />
+      <FILE name="aes/utils.vhd" />
+      <FILE name="aes/key_top.vhd" />
     </REQUIREMENTS>
   </FUNCTION>
 </RTL_SPEC>
