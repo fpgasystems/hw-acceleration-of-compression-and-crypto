@@ -1,16 +1,24 @@
-# hw-acceleration-of-compression-and-crypto
-
 # CompNcrypt
 FPGA OpenCL offloading pipelines for C|Dec-ompression and En|De-cryption.
 
 ## Setup
 Project tested on Intel FPGA Programmable Acceleration Card D5005 within a local server and IL Academic Compute Environment (ACE).
 
+### Local server
+```bash
+ssh d5005.ethz.ch
+lspci | grep "accelerator"
+# af:00.0 Processing accelerators: Intel Corporation Device 0b2b (rev 01)
+source /opt/inteldevstack/init_env.sh
+source /opt/intelFPGA_pro/quartus_19.2.0b57/hld/init_opencl.sh
+cd compress-and-encrypt
+```
+
 ### IL Academic Compute Environment (ACE)
 ```bash
 source /export/fpga/bin/setup-fpga-env fpga-pac-s10
 qsub-fpga
-cd hw-acceleration-of-compression-and-crypto
+cd compress-and-encrypt
 ```
 
 ## Build
@@ -46,3 +54,4 @@ make host
 | --profilling | path to a file      | `output.csv` | Profilling output file    |
 | --emulator   |                     | false        | Run as emulation          |
 
+## Benchmarks

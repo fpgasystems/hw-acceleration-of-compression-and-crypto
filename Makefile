@@ -23,7 +23,6 @@ endif
 ##############################################################################
 
 BOARD := pac_s10_dc
-MODE  := CBC
 
 KERNEL_CL = hw/compNcrypt.cl
 
@@ -40,17 +39,7 @@ AES_ENGINES = 1
 AES_MODE = CBC
 AES_SOURCES = hw/aes/*.sv hw/aes/*.vhd
 AES_KERNEL_CL = hw/aes.cl
-
-ifeq ($(MODE),CBC)
 AES_KERNEL_XML = hw/aes/aes_kernels.xml
-else ifeq ($(MODE),ECB)
-AES_KERNEL_XML = hw/aes/aes_kernels_ecb.xml
-else ifeq ($(MODE),CTR)
-AES_KERNEL_XML = hw/aes/aes_kernels_ctr.xml
-else
-$(error Invalid TARGET)
-endif
-
 AES_KERNEL_AOC = $(TARGET_DIR)/aes.aoco
 AES_KERNEL_LIB = aes.aoclib
 
