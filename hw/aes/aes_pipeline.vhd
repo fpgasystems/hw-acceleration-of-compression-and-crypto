@@ -55,8 +55,8 @@ begin
     end generate GEN_EBC;
 
     GEN_CTR: if (MODE = 1) generate
-        s_data_to_block   <= cntr_in;
-        s_data_from_block <= data_in xor data_pipe(ENC_ROUNDS);
+        s_data_to_block   <= data_in;
+        s_data_from_block <= cntr_in xor data_pipe(ENC_ROUNDS);
     end generate GEN_CTR;
 
     GEN_CBC: if (MODE = 2) generate

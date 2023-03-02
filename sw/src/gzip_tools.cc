@@ -36,7 +36,8 @@
 #include <stack>
 
 #include "gzip_tools.h"
-#include "AOCLUtils/aocl_utils.h"
+
+using namespace std;
 
 //---------------------------------------------------------------------------------------
 //  FUNCTION IMPLEMENTATIONS
@@ -470,7 +471,7 @@ static int _Tree_Limit_Depth(huff_encodenode_t *root, int max_depth)
 {
   int max_depth_found = _Tree_Depth(root);
 
-  std::stack<huff_encodenode_t *> traversal_stack;
+  stack<huff_encodenode_t *> traversal_stack;
 
   //add root node
   traversal_stack.push(root);
@@ -584,7 +585,7 @@ static int _Tree_Limit_Depth(huff_encodenode_t *root, int max_depth)
 
 static void _Tree_Annotate_Depth(huff_encodenode_t *root)
 {
-  std::stack<huff_encodenode_t *> traversal_stack;
+  stack<huff_encodenode_t *> traversal_stack;
 
   root->Level = 0;
 
@@ -623,7 +624,7 @@ static void _Tree_Annotate_Depth(huff_encodenode_t *root)
 
 static int _Tree_Depth(huff_encodenode_t *root)
 {
-  std::stack<huff_encodenode_t *> traversal_stack;
+  stack<huff_encodenode_t *> traversal_stack;
 
   //add root node
   traversal_stack.push(root);
@@ -659,7 +660,7 @@ static int _Tree_Depth(huff_encodenode_t *root)
 
 static void _Tree_Debug_Print(huff_encodenode_t *root)
 {
-  std::stack<huff_encodenode_t *> traversal_stack;
+  stack<huff_encodenode_t *> traversal_stack;
   //add root node
   traversal_stack.push(root);
 
@@ -805,81 +806,4 @@ void Huffman_Uncompress( unsigned char *in, unsigned char *out, huff_encodenode_
 
 void Print_Huffman(huff_encodenode_t *tree){
   _Tree_Debug_Print(tree);
-}
-
-//--------------------------------------------------------------------------------------------------
-//  Decompress on HOST
-//---------------------------
-//
-//--------------------------------------------------------------------------------------------------
-
-int decompress_on_host(unsigned char *input, huff_encodenode_t *tree, unsigned int insize,
-  unsigned int outsize, unsigned char marker, unsigned short *output_huffman,
-  gzip_out_info_t gzip_out_info, unsigned int remaining_bytes, double &time_decompress)
-{
-  unsigned char *output_huffman_char = (unsigned char *)aocl_utils::alignedMalloc(outsize);
-  unsigned char *decompress_lz       = (unsigned char *)aocl_utils::alignedMalloc(outsize);
-  unsigned char *decompress_huff     = (unsigned char *)aocl_utils::alignedMalloc(outsize);
-  unsigned char *decompress_huff_lz  = (unsigned char *)aocl_utils::alignedMalloc(outsize);
-
-  double lib_start = aocl_utils::getCurrentTimestamp();
-  //convert output_huffman from shorts to chars
-  for (int i = 0; i < gzip_out_info.compsize_huffman[0]; i++) {
-    //transform from shorts to chars
-    short comp_short = output_huffman[i/2];
-    if (i%2 == 0)
-      comp_short >>= 8;
-    unsigned char comp_char = comp_short;
-    output_huffman_char[i] = comp_char;
-  }
-
-  //---------------------------------------
-  // DECOMPRESS HUFFMAN
-  //---------------------------------------
-  Huffman_Uncompress(output_huffman_char, decompress_huff, tree, gzip_out_info.compsize_huffman[0],
-    gzip_out_info.compsize_lz[0], marker);
-
-  //append last VEC bytes starting from fvp
-  for (int i = gzip_out_info.fvp[0]; i < VEC; i++) {
-    decompress_huff[gzip_out_info.compsize_lz[0]++] = input[insize-VEC+i];
-    if (input[insize-VEC+i] == marker)
-      decompress_huff[gzip_out_info.compsize_lz[0]++] = 0;
-  }
-
-  //append to output_huff the ommitted bytes
-  for (int i = 0; i < remaining_bytes; i++) {
-    decompress_huff[gzip_out_info.compsize_lz[0]++] = input[insize++];
-    if (input[insize-1] == marker)
-      decompress_huff[gzip_out_info.compsize_lz[0]++] = 0;
-  }
-
-  //---------------------------------------
-  // DECOMPRESS LZ
-  //---------------------------------------
-
-  // Compare input / output_huffman data
-  int err_count = 0;
-
-  err_count += LZ_Uncompress(decompress_huff, decompress_huff_lz, gzip_out_info.compsize_lz[0]);
-
-  //---------------------------------------
-  double lib_stop = aocl_utils::getCurrentTimestamp();
-  time_decompress = lib_stop-lib_start;
-
-  for (int k = 0; k < insize; k++) {
-    if (input[k] != decompress_huff_lz[k]) {
-      err_count++;
-      if (err_count < 10) {
-        printf( "%d: %d '%c'!= %d '%c' errr\n", k, decompress_huff_lz[k],
-          decompress_huff_lz[k], input[k], input[k]);
-      }
-    }
-  }
-
-  aocl_utils::alignedFree(decompress_lz);
-  aocl_utils::alignedFree(decompress_huff);
-  aocl_utils::alignedFree(decompress_huff_lz);
-  aocl_utils::alignedFree(output_huffman_char);
-
-  return err_count;
 }

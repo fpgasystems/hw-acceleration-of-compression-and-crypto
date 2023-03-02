@@ -90,7 +90,7 @@ GEN_4: if (MODE=0 OR MODE=1 OR (MODE=2 AND OPERATION=1)) generate
             );
     end generate GEN_AES_PAR;
     
-    GEN_DAT: if (MODE=2) generate
+    GEN_DAT: if (MODE=2 OR MODE=1) generate
             DATA_PIPE_0: entity work.data_pipeline
             generic map(
                 NPAR       => NPAR,
@@ -109,11 +109,11 @@ GEN_4: if (MODE=0 OR MODE=1 OR (MODE=2 AND OPERATION=1)) generate
             );
     end generate GEN_DAT;
 
-    GEN_CNTR2: if (MODE=2) generate
+    GEN_CNTR2: if (MODE=2 OR MODE=1) generate
         s_cntr <= s_data_piped(0);
     end generate;
     
-    GEN_CNTR1: if (MODE/=2) generate
+    GEN_CNTR1: if (MODE=0) generate
         s_cntr <= cntr_in;
     end generate GEN_CNTR1;
     

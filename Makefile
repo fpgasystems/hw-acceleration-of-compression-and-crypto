@@ -23,10 +23,12 @@ endif
 ##############################################################################
 
 BOARD := pac_s10_dc
+MODE  := CBC
 
 KERNEL_CL = hw/compNcrypt.cl
 
 GZIP_ENGINES = 1
+GZIP_STORE = false
 GZIP_VEC = 16
 GZIP_LBD = 1
 GZIP_SOURCES = hw/gzip.cl
@@ -34,21 +36,29 @@ GZIP_SOURCES = hw/gzip.cl
 GZIP_FLAGS := -DVEC=$(GZIP_VEC)
 GZIP_FLAGS += -DLOW_BANDWIDTH_DEVICE=$(GZIP_LBD)
 GZIP_FLAGS += -DGZIP_ENGINES=$(GZIP_ENGINES)
+GZIP_FLAGS += -DGZIP_STORE=$(GZIP_STORE)
 
-AES_ENGINES = 1
-AES_MODE = CBC
 AES_SOURCES = hw/aes/*.sv hw/aes/*.vhd
 AES_KERNEL_CL = hw/aes.cl
+
+ifeq ($(MODE),CBC)
 AES_KERNEL_XML = hw/aes/aes_kernels.xml
+else ifeq ($(MODE),ECB)
+AES_KERNEL_XML = hw/aes/aes_kernels_ecb.xml
+else ifeq ($(MODE),CTR)
+AES_KERNEL_XML = hw/aes/aes_kernels_ctr.xml
+else
+$(error Invalid TARGET)
+endif
+
 AES_KERNEL_AOC = $(TARGET_DIR)/aes.aoco
 AES_KERNEL_LIB = aes.aoclib
 
 TARGET := hw
 TARGET_HW := compNcrypt.aocx
 TARGET_TAG := build
-TARGET_DIR := $(TARGET_TAG).$(TARGET).$(AES_MODE).$(GZIP_ENGINES)g.$(AES_ENGINES)a
+TARGET_DIR := $(TARGET_TAG).$(TARGET).$(GZIP_ENGINES)e.$(GZIP_VEC)v.$(GZIP_LBD)ldb
 
-GZIP_FLAGS += -DAES_ENGINES=$(AES_ENGINES)
 GZIP_FLAGS += -DBUILD_FOLDER=$(TARGET_DIR)
 
 ifeq ($(TARGET),hw_emu)
@@ -92,7 +102,6 @@ CXXFLAGS += -fstack-protector
 CXXFLAGS += -D_FORTIFY_SOURCE=2
 CXXFLAGS += -Wformat -Wformat-security
 CXXFLAGS += -fPIE
-CXXFLAGS += -std=c++11
 
 # We must force GCC to never assume that it can shove in its own
 # sse2/sse3 versions of strlen and strcmp because they will CRASH.
@@ -110,7 +119,7 @@ INC_DIRS := sw/inc sw/common/inc
 LIB_DIRS := 
 
 # Files
-INCS := $(wildcard sw/inc/*.h sw/src/*.h)
+INCS := $(wildcard sw/inc/*.h)
 SRCS := $(wildcard sw/src/*.cc sw/src/*.cpp sw/common/src/AOCLUtils/*.cpp)
 LIBS := rt pthread
 
